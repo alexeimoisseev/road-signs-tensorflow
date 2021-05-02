@@ -5,10 +5,13 @@ from PIL import Image, ImageDraw, ImageFont
 from six import BytesIO
 import numpy as np
 
+import datetime
+
 import random
 
 
 import matplotlib
+import matplotlib.image
 import matplotlib.pyplot as plt
 
 from object_detection.utils import visualization_utils as viz_utils
@@ -68,7 +71,7 @@ category_index = {
 }
 
 num_classes = len(category_index)
-batch_size = 50
+batch_size = 100
 learning_rate = 0.001
 num_batches = 1000
 
@@ -80,7 +83,7 @@ class Box:
     self.right = right
     self.bottom = bottom
     self.category = category
-    self.gt_box = np.array([[top, right, bottom, left]], dtype=np.float32)
+    self.gt_box = np.array([[top, left, bottom , right]], dtype=np.float32)
 
   def getGtBoxTensor(self):
     self.gt_box_tensor = tf.convert_to_tensor(self.gt_box, dtype=tf.float32)
@@ -90,7 +93,7 @@ class Box:
     zero_indexed_groundtruth_classes = tf.convert_to_tensor(
       np.full(
         shape=[self.gt_box.shape[0]],
-        fill_value=int(self.category),
+        fill_value=self.category,
         dtype=np.int32
       )
     )
@@ -104,12 +107,14 @@ class Box:
 class TrainImage:
   def __init__(self, filename):
     self.filename = filename
-    img_data = tf.io.gfile.GFile(filename, 'rb').read()
-    image = Image.open(BytesIO(img_data))
-    (self.width, self.height) = image.size
-    self.np_image = self.getNpImage(image)
+    # img_data = tf.io.gfile.GFile(filename, 'rb').read()
+    # image = Image.open(BytesIO(img_data))
+    # (self.width, self.height) = image.size
+    # np_image = self.getNpImage(image)
+    # image.close()
+    self.np_image = matplotlib.image.imread(filename)
+    (self.height, self.width, _) = self.np_image.shape
     self.boxes = []
-    image.close()
     self.train_image_tensor = self.getTensor()
 
   def addGtBox(self, left, top, right, bottom, category):
@@ -127,7 +132,7 @@ class TrainImage:
       (self.height, self.width, 3)).astype(np.uint8)
 
   def getTensor(self):
-     return tf.expand_dims(
+    return tf.expand_dims(
       tf.convert_to_tensor(self.np_image, dtype=tf.float32),
       axis=0
     )
@@ -137,18 +142,19 @@ def loadMetadata(path):
   images = {}
   gt = open(path + "/gt.txt")
   lines = gt.readlines()
+
   for line in lines:
     (filename, left, top, right, bottom, category) = line.split(";")
+    cat = int(category)
     fullFileName = path + "/" + filename
     image = None
     if (filename not in images):
       images[filename] = TrainImage(fullFileName)
     image = images[filename]
-    image.addGtBox(int(left), int(top), int(right), int(bottom), category)
+    image.addGtBox(int(left), int(top), int(right), int(bottom), cat)
     print("loaded image", fullFileName)
   return images
 
-label_id_offset = 0
 
 def plot_detection(image, box, classes, scores, category_index, fig_size=(12, 16)):
   np_image_with_annotations = image.np_image.copy()
@@ -165,7 +171,6 @@ def plot_detection(image, box, classes, scores, category_index, fig_size=(12, 16
 
 
 images = loadMetadata("TrainIJCNN2013")
-print(images)
 
 dummy_scores = np.array([1.0], dtype=np.float32)  # give boxes a score of 100%
 
@@ -213,10 +218,6 @@ _ = detection_model.postprocess(prediction_dict, shapes)
 print('Weights restored!')
 
 
-tf.keras.backend.set_learning_phase(True)
-
-
-
 
 trainable_variables = detection_model.trainable_variables
 to_fine_tune = []
@@ -255,14 +256,14 @@ def get_model_train_step_function(model, optimizer, vars_to_fine_tune):
     Returns:
       A scalar tensor representing the total loss for the input batch.
     """
-    shapes = tf.constant(batch_size * [[320, 320, 3]], dtype=tf.int32)
+    shapes = tf.constant(len(image_tensors) * [[320, 320, 3]], dtype=tf.int32)
     model.provide_groundtruth(
         groundtruth_boxes_list=groundtruth_boxes_list,
         groundtruth_classes_list=groundtruth_classes_list)
     with tf.GradientTape() as tape:
-      preprocessed_images = tf.concat(
-          [detection_model.preprocess(image_tensor)[0]
-           for image_tensor in image_tensors], axis=0)
+      sss = [detection_model.preprocess(image_tensor)[0]
+           for image_tensor in image_tensors]
+      preprocessed_images = tf.concat(sss, axis=0)
       prediction_dict = model.predict(preprocessed_images, shapes)
       losses_dict = model.loss(prediction_dict, shapes)
       total_loss = losses_dict['Loss/localization_loss'] + losses_dict['Loss/classification_loss']
@@ -314,6 +315,8 @@ train_step_fn = get_model_train_step_function(
     detection_model, optimizer, to_fine_tune)
 
 
+print("starging training")
+
 for idx in range(num_batches):
   # Grab keys for a random subset of examples
   all_keys = list(range(len(train_image_tensors)))
@@ -330,16 +333,10 @@ for idx in range(num_batches):
   # Training step (forward pass + backwards pass)
   total_loss = train_step_fn(image_tensors, gt_boxes_list, gt_classes_list)
 
-  print('batch ' + str(idx) + ' of ' + str(num_batches)
+  print(datetime.datetime.now().isoformat(), 'batch ' + str(idx) + ' of ' + str(num_batches)
     + ', loss=' +  str(total_loss.numpy()), flush=True)
 
 print('Done fine-tuning!')
 
 ckpt_manager.save()
 print('Checkpoint saved!')
-
-
-
-
-
-
